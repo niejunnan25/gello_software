@@ -15,10 +15,10 @@ class PandaRobot(Robot):
         from polymetis import GripperInterface, RobotInterface
 
         self.robot = RobotInterface(
-            ip_address=robot_ip,
+            ip_address=robot_ip, enforce_version=False
         )
         self.gripper = GripperInterface(
-            ip_address="localhost",
+            ip_address=robot_ip
         )
         self.robot.go_home()
         self.robot.start_joint_impedance()
