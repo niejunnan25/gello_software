@@ -15,14 +15,15 @@ class PandaRobot(Robot):
         from polymetis import GripperInterface, RobotInterface
 
         self.robot = RobotInterface(
-            ip_address=robot_ip,
+            ip_address=robot_ip, enforce_version=False
         )
         self.gripper = GripperInterface(
-            ip_address="localhost",
+            ip_address=robot_ip
         )
         self.robot.go_home()
         self.robot.start_joint_impedance()
         self.gripper.goto(width=MAX_OPEN, speed=255, force=255)
+        self.gripper_closed = False
         time.sleep(1)
 
     def num_dofs(self) -> int:
@@ -42,6 +43,8 @@ class PandaRobot(Robot):
         robot_joints = self.robot.get_joint_positions()
         gripper_pos = self.gripper.get_state()
         pos = np.append(robot_joints, gripper_pos.width / MAX_OPEN)
+        # print(robot_joints)
+        # print(pos)
         return pos
 
     def command_joint_state(self, joint_state: np.ndarray) -> None:
@@ -53,18 +56,30 @@ class PandaRobot(Robot):
         import torch
 
         self.robot.update_desired_joint_positions(torch.tensor(joint_state[:-1]))
-        self.gripper.goto(width=(MAX_OPEN * (1 - joint_state[-1])), speed=1, force=1)
+        gripper_closed = joint_state[-1] > 0.25
+        if gripper_closed and not self.gripper_closed:
+            self.gripper_closed = True
+            self.gripper.grasp(speed=0.1, force=1.0)
+        elif not gripper_closed and self.gripper_closed:
+            self.gripper_closed = False
+            # self.gripper.stop()
+            self.gripper.goto(width=MAX_OPEN, speed=1, force=1)
+        return
 
     def get_observations(self) -> Dict[str, np.ndarray]:
         joints = self.get_joint_state()
-        pos_quat = np.zeros(7)
+        velocities = self.robot.get_joint_velocities().numpy()
+
+        pos, quat = self.robot.get_ee_pose()
+        pos_quat = np.concatenate([pos, quat])
         gripper_pos = np.array([joints[-1]])
         return {
             "joint_positions": joints,
-            "joint_velocities": joints,
+            "joint_velocities": velocities,
             "ee_pos_quat": pos_quat,
             "gripper_position": gripper_pos,
         }
+    
 
 
 def main():

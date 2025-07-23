@@ -1,12 +1,17 @@
 import datetime
 import glob
 import time
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Optional, Tuple
-
 import numpy as np
 import tyro
+import os
+import cv2
+import termcolor
+import pickle
+import copy
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional, Tuple, Dict
 
 from gello.agents.agent import BimanualAgent, DummyAgent
 from gello.agents.gello_agent import GelloAgent
@@ -15,36 +20,29 @@ from gello.env import RobotEnv
 from gello.robots.robot import PrintRobot
 from gello.zmq_core.robot_node import ZMQClientRobot
 
-import os
-import cv2
 from ZEDCamera import ZedCamera
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from gello.data_utils.keyboard_interface import KBReset
 from tqdm import tqdm
+from PIL import Image
 
-def print_color(*args, color=None, attrs=(), **kwargs):
-    import termcolor
+def save_single_pkl(path: Path, data: dict):
 
-    if len(args) > 0:
-        args = tuple(termcolor.colored(arg, color=color, attrs=attrs) for arg in args)
-    print(*args, **kwargs)
+    with open(path, "wb") as f:
+        pickle.dump(data, f)
+
+import cv2
 
 def save_image(path, image):
-    image_bgr = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(path, image_bgr)
+    """
+    保存图像到指定路径，输入图像为 RGB 格式，直接保存。
 
-def generate_video_from_dict(image_dict, output_path, fps=30):
-    sorted_timestamps = sorted(image_dict.keys())
-
-    sample_img = image_dict[sorted_timestamps[0]]
-    h, w, _ = sample_img.shape
-
-    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-    out = cv2.VideoWriter(output_path, fourcc, fps, (w, h))
-
-    for time_stamp in tqdm(sorted_timestamps, desc=f"写入视频 {os.path.basename(output_path)}"):
-        frame = image_dict[time_stamp]
-        out.write(frame)
-    out.release()
+    参数：
+        path: 保存图像的文件路径（例如 'output.png'）
+        image: 输入的 RGB 格式图像（NumPy 数组）
+    """
+    # 直接保存 RGB 格式图像
+    cv2.imwrite(path, image)
 
 @dataclass
 class Args:
@@ -53,7 +51,7 @@ class Args:
     wrist_camera_port: int = 5000
     base_camera_port: int = 5001
     hostname: str = "127.0.0.1"
-    robot_type: str = None  # only needed for quest agent or spacemouse agent
+    robot_type: Optional[str] = None  # only needed for quest agent or spacemouse agent
     hz: int = 100
     start_joints: Optional[Tuple[float, ...]] = None
 
@@ -63,6 +61,27 @@ class Args:
     data_dir: str = "~/bc_data"
     bimanual: bool = False
     verbose: bool = False
+
+def print_color(*args, color=None, attrs=(), **kwargs):
+
+    if len(args) > 0:
+        args = tuple(termcolor.colored(arg, color=color, attrs=attrs) for arg in args)
+    print(*args, **kwargs)
+
+# def save_frame(
+#     folder: Path,
+#     timestamp: datetime.datetime,
+#     obs: Dict[str, np.ndarray],
+#     action: np.ndarray,
+# ) -> None:
+#     obs["control"] = action  # add action to obs
+
+#     # make folder if it doesn't exist
+#     folder.mkdir(exist_ok=True, parents=True)
+#     recorded_file = folder / (timestamp.isoformat() + ".pkl")
+
+#     with open(recorded_file, "wb") as f:
+#         pickle.dump(obs, f)
 
 
 def main(args):
@@ -175,18 +194,6 @@ def main(args):
     obs = env.get_obs()
     joints = obs["joint_positions"]
 
-    # print("===================================================================")
-
-    # # print(f"OBS: {obs}")
-    # test_time_idx = 0
-    # while test_time_idx < 10:
-    #     obs = env.get_obs()
-    #     for key, value in obs.items():
-    #         print(f"{key} : {value}")
-    #     print(agent.act(obs))
-    #     test_time_idx += 1
-
-    # print("===================================================================")
     print(f"Joints: {joints}")
 
     abs_deltas = np.abs(start_pos - joints)
@@ -232,7 +239,6 @@ def main(args):
     if (action - joints > 0.5).any():
         print("Action is too big")
 
-        # print which joints are too big
         joint_index = np.where(action - joints > 0.8)
         for j in joint_index:
             print(
@@ -240,32 +246,32 @@ def main(args):
             )
         exit()
 
-    if args.use_save_interface:
-        from gello.data_utils.keyboard_interface import KBReset
-
-        kb_interface = KBReset()
+    kb_interface = KBReset()
 
     print_color("\nStart 🚀🚀🚀", color="green", attrs=("bold",))
 
-    zed_camera = ZedCamera(serial_number = 36276705,fps=30)
-    zed_wrist_camera = ZedCamera(serial_number = 13132609,fps=30)
+    zed_camera = ZedCamera(serial_number=36276705,fps=30)
+    zed_wrist_camera = ZedCamera(serial_number=13132609, fps=30)
 
     save_path = None
     start_time = time.time()
 
     left_image_dict = {}
     wrist_left_image_dict = {}
+    obs_dict = {}
 
     while True:
-        num = time.time() - start_time
-        message = f"\rTime passed: {round(num, 2)}"
-        print_color(
-            message,
-            color="white",
-            attrs=("bold",),
-            end="",
-            flush=True,
-        )
+        # num = time.time() - start_time
+
+        # message = f"\rTime passed: {round(num, 2)}"
+        # print_color(
+        #     message,
+        #     color="white",
+        #     attrs=("bold",),
+        #     end="",
+        #     flush=True,
+        # )
+
         action = agent.act(obs)
         dt = datetime.datetime.now()
 
@@ -273,7 +279,7 @@ def main(args):
 
             state = kb_interface.update()
 
-            # 当打开 pygame , 按下 s 键后执行这个 if 语句
+            # 当打开 pygame , 按下 SPACE 键后执行这个 if 语句
             if state == "start":
                 dt_time = datetime.datetime.now()
                 save_path = (
@@ -284,20 +290,35 @@ def main(args):
 
                 save_path.mkdir(parents=True, exist_ok=True)
 
-                print(f"Pickle path is {save_path}")
-
             elif state == "save":
-                assert save_path is not None, "something went wrong"
+
+                # assert save_path is not None, "save_path is None"
+
+                if save_path is None:
+                    print("ERROR：请先按空格键开始录制！")
+                    continue  # 跳过本次循环
                 
-                # 在save_frame 之前获取图像，尽可能减少延迟
-                # 左边的图像，右边的图像，获取图像可能产生延迟
                 left_image, right_image = zed_camera.capture_frame()
                 wrist_left_image, wrist_right_image = zed_wrist_camera.capture_frame()
                 
-                save_frame(save_path, dt, obs, action)
+                # TODO: 把 save_frame 函数改成在下面的 state == "stop" 时，再写入 .pkl 文件
+                # 7 月 21 日 12:30 ， 已经修改完了
+                # save_frame(save_path, dt, obs, action)
 
+                # timestamp : 20250719_204355_123456
+                # timestamp = dt.isoformat().replace(":", "_").replace(".", "_")
                 dt = datetime.datetime.now()
-                timestamp = dt.strftime("%Y%m%d_%H%M%S")
+
+                # 深拷贝
+                action_copy = copy.deepcopy(action)
+                obs_copy = copy.deepcopy(obs)
+                obs_copy["control"] = action_copy
+                # obs["control"] = action
+
+
+                timestamp = dt.strftime("%Y%m%d_%H%M%S_%f")
+
+                obs_dict[timestamp] = obs_copy
                 left_image_dict[timestamp] = left_image
                 wrist_left_image_dict[timestamp] = wrist_left_image
                 
@@ -306,6 +327,13 @@ def main(args):
             elif state == "esc":
                 break
             elif state == "stop":
+                
+                # assert save_path is not None, "save_path is None"
+
+                if save_path is None:
+                    print("错误：请先按空格键开始录制！")
+                    kb_interface._set_color((128, 128, 128))  # 恢复灰色
+                    continue  # 跳过本次循环
 
                 kb_interface._saved = False
 
@@ -314,56 +342,95 @@ def main(args):
                 image_path = os.path.join(save_path, "image")
                 wrist_image_path = os.path.join(save_path, "wrist_image")
 
+                save_path.mkdir(exist_ok=True, parents=True)
+
                 os.makedirs(image_path, exist_ok=True)
                 os.makedirs(wrist_image_path, exist_ok=True)
+
+                #################################################################################################################
+                # 保存 .pkl 文件
+                print("正在保存 .pkl 文件...")
+
+                pkl_futures = []
+                pkl_save_start = time.time()
+                with ThreadPoolExecutor(max_workers=8) as executor:
+                    for timestamp, single_obs in obs_dict.items():
+                        pkl_path = save_path / f"{timestamp}.pkl"
+                        pkl_futures.append(executor.submit(save_single_pkl, pkl_path, single_obs))
+
+                    for future in tqdm(as_completed(pkl_futures), total=len(pkl_futures), desc="pkl 多线程写入进度"):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            print(f"ERROR: 保存 {future} 出错：{e}")
+                
+                pkl_save_end = time.time()
+
+                # for timestamp, obs in obs_dict.items():
+                #     recorded_file = save_path / f"{timestamp}.pkl"
+                #     with open(recorded_file, "wb") as f:
+                #         pickle.dump(obs, f)
+
+                #################################################################################################################
+                # 保存图像
 
                 print("等待图像保存...")
                 print("正在使用多线程进行图像保存...")
 
-                # with ThreadPoolExecutor(max_workers=8) as executor:
+                # with ThreadPoolExecutor(max_workers = 8) as executor:
+
                 #     for timestamp, left_image in left_image_dict.items():
-                #         left_image_path = os.path.join(save_path, f"left_{timestamp}.png")
-                #         executor.submit(save_image, left_image_path, left_image)
+                #         left_image_path = os.path.join(image_path, f"left_{timestamp}.png")
+                #         futures.append(executor.submit(save_image, left_image_path, left_image))
 
-                #     # 保存 wrist 相机图像
                 #     for timestamp, wrist_left_image in wrist_left_image_dict.items():
-                #         wrist_left_image_path = os.path.join(save_path, f"wrist_left_{timestamp}.png")
-                #         executor.submit(save_image, wrist_left_image_path, wrist_left_image)   
+                #         wrist_left_image_path = os.path.join(wrist_image_path, f"wrist_left_{timestamp}.png")
+                #         futures.append(executor.submit(save_image, wrist_left_image_path, wrist_left_image))
 
-                futures = []
+                #     for _ in tqdm(as_completed(futures), total=len(futures), desc="多线程写入进度"):
+                #         pass
+
+                img_futures = []
+                image_save_start = time.time()
+
                 with ThreadPoolExecutor(max_workers=8) as executor:
-                    for timestamp, left_image in left_image_dict.items():
-                        left_image_path = os.path.join(image_path, f"left_{timestamp}.png")
-                        futures.append(executor.submit(save_image, left_image_path, left_image))
+                    for ts, img in left_image_dict.items():
+                        img_path = os.path.join(image_path, f"left_{ts}.png")
+                        img_futures.append(executor.submit(save_image, img_path, img))
+                    for ts, wimg in wrist_left_image_dict.items():
+                        wimg_path = os.path.join(wrist_image_path, f"wrist_left_{ts}.png")
+                        img_futures.append(executor.submit(save_image, wimg_path, wimg))
 
-                    for timestamp, wrist_left_image in wrist_left_image_dict.items():
-                        wrist_left_image_path = os.path.join(wrist_image_path, f"wrist_left_{timestamp}.png")
-                        futures.append(executor.submit(save_image, wrist_left_image_path, wrist_left_image))
-
-                    for _ in tqdm(as_completed(futures), total=len(futures), desc="多线程写入进度"):
-                        pass
+                    for future in tqdm(as_completed(img_futures), total=len(img_futures), desc="图像多线程写入进度"):
+                        try:
+                            future.result()
+                        except Exception as e:
+                            print(f"ERROR: 保存图像时出错：{e}")
                 
-                left_video_path = os.path.join(save_path, "left.mp4")
-                wrist_video_path = os.path.join(save_path, "wrist_left.mp4")
+                image_save_end = time.time()
 
-                generate_video_from_dict(left_image_dict, left_video_path)
-                generate_video_from_dict(wrist_left_image_dict, wrist_video_path)
+                print(f".pkl 文件以及 .png 图像均已保存完成：")
+                print(f"   - .pkl 文件：{len(obs_dict)}")
+                print(f"   - 左视图帧数：{len(left_image_dict)}")
+                print(f"   - 手腕图帧数：{len(wrist_left_image_dict)}")
+                print(f"   - .pkl 文件保存耗时：{pkl_save_end - pkl_save_start:.2f} 秒")
+                print(f"   - 图像保存耗时：{image_save_end - image_save_start:.2f} 秒")
 
+                obs_dict.clear()
                 left_image_dict.clear()
                 wrist_left_image_dict.clear()
+                print(f"缓存已清空")
 
                 kb_interface._set_color((128, 128, 128))
                 kb_interface._saved = False
                 save_path = None
 
-                print(f"图像保存完成, 共保存 {len(left_image_dict)} 张图像")
-                print(f"主视角图像保存在: {left_image_path}, 腕部视角图像保存在: {wrist_image_path}")
-                print(f"主视角视频保存在: {left_video_path}, 腕部视角视频保存在: {wrist_right_image}")
                 print("按下 空格键 继续采集数据")
             else:
                 raise ValueError
             
         obs = env.step(action)
+    
     kb_interface.close()
 
 

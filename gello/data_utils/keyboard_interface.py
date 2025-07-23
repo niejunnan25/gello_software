@@ -1,15 +1,20 @@
 import pygame
+import sys
+
 
 NORMAL = (128, 128, 128)
 RED = (255, 0, 0)
 GREEN = (0, 255, 0)
 
-KEY_START = pygame.K_s
-KEY_CONTINUE = pygame.K_c
-KEY_QUIT_RECORDING = pygame.K_q
-
+# 按下 ESC 退出
+# 按下 s 停止当前的录制，然后 多线程写入图像数据
+# 按下空格开始，图形化窗口变成绿色
+KEY_ESC_RECORDING = pygame.K_ESCAPE
+KET_STOP_RECORDING = pygame.K_s
+KEY_START_RECORDING = pygame.K_SPACE
 
 class KBReset:
+
     def __init__(self):
         pygame.init()
         self._screen = pygame.display.set_mode((800, 800))
@@ -17,16 +22,20 @@ class KBReset:
         self._saved = False
 
     def update(self) -> str:
-        pressed_last = self._get_pressed()
-        if KEY_QUIT_RECORDING in pressed_last:
+        pressed_list = self._get_pressed()
+
+        if KEY_ESC_RECORDING in pressed_list:
+            return "esc"
+
+        if KET_STOP_RECORDING in pressed_list:
             self._set_color(RED)
             self._saved = False
-            return "normal"
+            return "stop"
 
         if self._saved:
             return "save"
 
-        if KEY_START in pressed_last:
+        if KEY_START_RECORDING in pressed_list:
             self._set_color(GREEN)
             self._saved = True
             return "start"
@@ -46,14 +55,20 @@ class KBReset:
         self._screen.fill(color)
         pygame.display.flip()
 
+    def close(self):
+        pygame.display.quit()
+        pygame.quit()
 
 def main():
     kb = KBReset()
-    while True:
-        state = kb.update()
-        if state == "start":
-            print("start")
 
+    flag = True
+    while flag:
+        state = kb.update()
+        if state == "esc":
+            flag = False
+    # print(kb._get_pressed())
+    kb.close()
 
 if __name__ == "__main__":
     main()
